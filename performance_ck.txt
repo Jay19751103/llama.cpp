@@ -1,4 +1,4 @@
-Note that CK in https://github.com/Jay19751103/composable_kernel
+Note that CK in https://github.com/Jay19751103/composable_kernel please use this latest for llama branch
 
 After fix causal issue
 Tested following model Q4_K_M on gfx1201

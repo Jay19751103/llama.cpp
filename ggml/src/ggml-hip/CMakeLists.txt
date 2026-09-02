@@ -164,15 +164,31 @@ endif()
 target_link_libraries(ggml-hip PRIVATE ggml-base hip::host roc::rocblas roc::hipblas)
 
 if (GGML_HIP_CK_FMHA)
-    set(CK_FMHA_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../ggml-cuda/ck-fmha/lib/libck_tile_fmha.so")
-    if (NOT EXISTS "${CK_FMHA_LIB}")
-        message(FATAL_ERROR "GGML_HIP_CK_FMHA=ON but ${CK_FMHA_LIB} is missing; build the ck_tile_fmha target first (see build_llama.sh --ck).")
+    set(CK_FMHA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ggml-cuda/ck-fmha/lib")
+    if (WIN32)
+        # On Windows the ck_tile_fmha SHARED target produces a DLL plus an import
+        # library; link against the import lib and stage the DLL next to the
+        # binaries (Windows resolves DLLs from the executable's own directory).
+        set(CK_FMHA_IMPLIB "${CK_FMHA_DIR}/ck_tile_fmha.lib")
+        set(CK_FMHA_DLL    "${CK_FMHA_DIR}/ck_tile_fmha.dll")
+        if (NOT EXISTS "${CK_FMHA_IMPLIB}")
+            message(FATAL_ERROR "GGML_HIP_CK_FMHA=ON but ${CK_FMHA_IMPLIB} is missing; build the ck_tile_fmha target first (see build_llama.bat --build_ck).")
+        endif()
+        target_link_libraries(ggml-hip PRIVATE "${CK_FMHA_IMPLIB}")
+        add_custom_command(TARGET ggml-hip POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CK_FMHA_DLL}" "$<TARGET_FILE_DIR:ggml-hip>"
+            COMMENT "Staging ck_tile_fmha.dll next to ggml-hip")
+    else()
+        set(CK_FMHA_LIB "${CK_FMHA_DIR}/libck_tile_fmha.so")
+        if (NOT EXISTS "${CK_FMHA_LIB}")
+            message(FATAL_ERROR "GGML_HIP_CK_FMHA=ON but ${CK_FMHA_LIB} is missing; build the ck_tile_fmha target first (see build_llama.sh --ck).")
+        endif()
+        target_link_libraries(ggml-hip PRIVATE "${CK_FMHA_LIB}")
+        # Resolve the vendored .so at runtime from the binary's own directory.
+        set_target_properties(ggml-hip PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+        # Stage the .so next to the built binaries/libraries.
+        add_custom_command(TARGET ggml-hip POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CK_FMHA_LIB}" "$<TARGET_FILE_DIR:ggml-hip>"
+            COMMENT "Staging libck_tile_fmha.so next to ggml-hip")
     endif()
-    target_link_libraries(ggml-hip PRIVATE "${CK_FMHA_LIB}")
-    # Resolve the vendored .so at runtime from the binary's own directory.
-    set_target_properties(ggml-hip PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
-    # Stage the .so next to the built binaries/libraries.
-    add_custom_command(TARGET ggml-hip POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CK_FMHA_LIB}" "$<TARGET_FILE_DIR:ggml-hip>"
-        COMMENT "Staging libck_tile_fmha.so next to ggml-hip")
 endif()

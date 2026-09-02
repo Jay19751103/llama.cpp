@@ -82,6 +82,10 @@ else()
         ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu)
 endif()
 
+if (GGML_HIP_CK_FMHA)
+    list(APPEND GGML_SOURCES_ROCM ../ggml-cuda/ck-fmha/fattn-ck.cu)
+endif()
+
 ggml_add_backend_library(ggml-hip
                          ${GGML_HEADERS_ROCM}
                          ${GGML_SOURCES_ROCM}
@@ -126,6 +130,10 @@ if (GGML_HIP_EXPORT_METRICS)
     set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Rpass-analysis=kernel-resource-usage --save-temps")
 endif()
 
+if (GGML_HIP_CK_FMHA)
+    add_compile_definitions(GGML_HIP_CK_FMHA)
+endif()
+
 if (NOT GGML_CUDA_FA)
     add_compile_definitions(GGML_CUDA_NO_FA)
 endif()
@@ -151,3 +159,17 @@ if (GGML_HIP_RCCL)
 endif()
 
 target_link_libraries(ggml-hip PRIVATE ggml-base hip::host roc::rocblas roc::hipblas)
+
+if (GGML_HIP_CK_FMHA)
+    set(CK_FMHA_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../ggml-cuda/ck-fmha/lib/libck_tile_fmha.so")
+    if (NOT EXISTS "${CK_FMHA_LIB}")
+        message(FATAL_ERROR "GGML_HIP_CK_FMHA=ON but ${CK_FMHA_LIB} is missing; build the ck_tile_fmha target first (see build_llama.sh --ck).")
+    endif()
+    target_link_libraries(ggml-hip PRIVATE "${CK_FMHA_LIB}")
+    # Resolve the vendored .so at runtime from the binary's own directory.
+    set_target_properties(ggml-hip PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+    # Stage the .so next to the built binaries/libraries.
+    add_custom_command(TARGET ggml-hip POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CK_FMHA_LIB}" "$<TARGET_FILE_DIR:ggml-hip>"
+        COMMENT "Staging libck_tile_fmha.so next to ggml-hip")
+endif()

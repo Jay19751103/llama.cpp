@@ -7,13 +7,18 @@
 # linked or staged (the llama.cpp CMake flag GGML_HIP_CK_FMHA stays OFF and the
 # fattn-ck path compiles out to stubs).
 #
-# When --ck IS given the script, in order:
-#   1. configures + builds the `ck_tile_fmha` SHARED target in the sibling
-#      composable_kernel checkout for the requested arch list,
-#   2. copies the resulting libck_tile_fmha.so into
-#        ggml/src/ggml-cuda/ck-fmha/lib/libck_tile_fmha.so
-#   3. configures llama.cpp with -DGGML_HIP_CK_FMHA=ON (which stages the .so next
-#      to the binaries and compiles the ck dispatch path), then builds.
+# Building the CK library itself is controlled separately by --build_ck:
+#   * --build_ck (implies --ck): (re)compile the `ck_tile_fmha` SHARED target in
+#     the sibling composable_kernel checkout, then copy the resulting .so into the
+#     vendored ggml tree at ggml/src/ggml-cuda/ck-fmha/lib/libck_tile_fmha.so.
+#   * --ck without --build_ck: skip compiling CK and reuse the .so already
+#     vendored in the ggml tree.
+#
+# When --ck IS given the script then:
+#   1. configures llama.cpp with -DGGML_HIP_CK_FMHA=ON and compiles the ck
+#      dispatch path, then builds, and
+#   2. copies the vendored ggml-tree libck_tile_fmha.so into ./build/bin so it
+#      sits next to the binaries (auto-loaded when GGML_CK_FA=1).
 #
 # The arch list is exactly what llama.cpp / CMake accept for GPU_TARGETS, e.g.
 #   --archs gfx1100
@@ -22,8 +27,8 @@
 #   gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1152 gfx1201 gfx1202
 #
 # Usage:
-#   ./build_llama.sh [--archs "gfx1151;gfx1100"] [--ck] [--native] [--jobs N]
-#                    [--rocm /opt/rocm] [--clean] [--ck-clean]
+#   ./build_llama.sh [--archs "gfx1151;gfx1100"] [--ck] [--build_ck] [--native]
+#                    [--jobs N] [--rocm /opt/rocm] [--clean] [--ck-clean]
 #
 # --native bakes -march=native into the CPU backend (faster, but the binaries
 # only run on CPUs like the build host). Omit it (default) for portable builds
@@ -40,6 +45,7 @@ ROCM="${ROCM:-/opt/rocm}"
 JOBS="${JOBS:-$(nproc)}"
 CK_DIR="${CK_DIR:-$(cd "$LLAMA_DIR/.." && pwd)/composable_kernel}"
 WITH_CK=0
+BUILD_CK=0
 CLEAN=0
 CK_CLEAN=0
 # GGML_NATIVE bakes -march=native into the CPU backend; OFF keeps binaries
@@ -49,6 +55,7 @@ NATIVE=OFF
 while [ $# -gt 0 ]; do case "$1" in
   --archs)    ARCHS="$2"; shift 2;;
   --ck)       WITH_CK=1; shift;;
+  --build_ck) BUILD_CK=1; WITH_CK=1; shift;;
   --native)   NATIVE=ON; shift;;
   --jobs)     JOBS="$2"; shift 2;;
   --rocm)     ROCM="$2"; shift 2;;
@@ -68,13 +75,14 @@ BIN="$BUILD/bin"
 CK_LIB_DIR="$LLAMA_DIR/ggml/src/ggml-cuda/ck-fmha/lib"
 VENDORED="$CK_LIB_DIR/libck_tile_fmha.so"
 
-echo "==> archs=$ARCHS_CMAKE  ck=$WITH_CK  native=$NATIVE  jobs=$JOBS  rocm=$ROCM"
+echo "==> archs=$ARCHS_CMAKE  ck=$WITH_CK  build_ck=$BUILD_CK  native=$NATIVE  jobs=$JOBS  rocm=$ROCM"
 [ -x "$HIP_CLANGXX" ] || { echo "missing HIP compiler: $HIP_CLANGXX" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # Step 1+2: build the ck_tile FMHA shared library and vendor it into llama.cpp.
+# Only when --build_ck is given; otherwise the vendored ggml-tree .so is reused.
 # ---------------------------------------------------------------------------
-if [ "$WITH_CK" = 1 ]; then
+if [ "$BUILD_CK" = 1 ]; then
   [ -d "$CK_DIR" ] || { echo "composable_kernel dir not found: $CK_DIR (use --ck-dir)" >&2; exit 1; }
   [ -f "$CK_DIR/example/ck_tile/01_fmha/ck_tile_fmha_c_api.cpp" ] || {
     echo "ck C-ABI shim missing in $CK_DIR; apply 0001-CK-patch.patch first" >&2; exit 1; }
@@ -138,10 +146,14 @@ cmake --build "$BUILD" \
 echo
 echo "==> DONE. binaries in $BIN"
 if [ "$WITH_CK" = 1 ]; then
-  if [ -f "$BIN/libck_tile_fmha.so" ]; then
-    echo "    libck_tile_fmha.so staged (auto-loaded when GGML_CK_FA=1)."
+  # Stage the vendored ggml-tree .so next to the binaries.
+  # With --build_ck it was just refreshed above; without it we reuse the committed copy.
+  if [ -f "$VENDORED" ]; then
+    mkdir -p "$BIN"
+    cp -f "$VENDORED" "$BIN/libck_tile_fmha.so"
+    echo "    staged $VENDORED -> $BIN/libck_tile_fmha.so (auto-loaded when GGML_CK_FA=1)."
   else
-    echo "    WARN: libck_tile_fmha.so not staged into $BIN"
+    echo "    WARN: $VENDORED missing; run with --build_ck to build it" >&2
   fi
   cat <<EOF
 
